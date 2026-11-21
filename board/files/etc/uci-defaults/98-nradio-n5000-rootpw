@@ -1,0 +1,8 @@
+#!/bin/sh
+# Pre-provision a known root password so first login works even on hosts
+# where empty-password authentication is rejected. Change it after login.
+grep -q '^root:' /etc/shadow 2>/dev/null || exit 0
+cur=$(awk -F: '^$1=="root"{print $2}' /etc/shadow 2>/dev/null)
+[ -z "$cur" ] || [ "$cur" = "x" ] || exit 0
+echo "root:$6$As2VjbZ0ooKNRXoc$.TM4fFXFVS3VvacGL1KnFSmL6SOo59EG/cTXW01AB8DnIAM78SYMy/5a3c4JDC14za0jS8.qSqqQhr.caGi7x." | chpasswd -e
+exit 0
