@@ -9,4 +9,20 @@ board_config_update
 ucidef_set_country CN
 ucidef_set_wireless 2g NRadio-N5000-2G sae-mixed 12345678
 ucidef_set_wireless 5g NRadio-N5000-5G sae-mixed 12345678
+
+# Wi-Fi 7 bandwidth defaults: 2.4G EHT40, 5G EHT160 (verified on device).
+if [ "$(board_name)" = "nradio,n5000" ]; then
+	i=0
+	while uci -q get "wireless.@wifi-device[$i]" >/dev/null; do
+		band=$(uci -q get "wireless.@wifi-device[$i].band")
+		case "$band" in
+		2g) uci set "wireless.@wifi-device[$i].htmode=EHT40" ;;
+		5g) uci set "wireless.@wifi-device[$i].htmode=EHT160" ;;
+		esac
+		i=$((i + 1))
+	done
+fi
+
+uci commit wireless
+
 board_config_flush

@@ -65,4 +65,35 @@ fi
 [ -f /etc/hotplug.d/ieee80211/15-nradio-n5000-wifi-mac ] && \
 	ACTION=add /bin/sh /etc/hotplug.d/ieee80211/15-nradio-n5000-wifi-mac
 
+# 6. Fixed IPv4 upstream DNS (the 5G modem network prefers AAAA-only answers
+#    which breaks IPv4-only clients and the router itself).
+uci -q delete dhcp.@dnsmasq[0].server
+uci add_list dhcp.@dnsmasq[0].server='223.5.5.5'
+uci add_list dhcp.@dnsmasq[0].server='119.29.29.29'
+uci set dhcp.@dnsmasq[0].noresolv='1'
+uci commit dhcp
+
+# 7. Software flow offloading for LAN->WAN forwarding.
+uci set firewall.@defaults[0].flow_offloading='1'
+uci commit firewall
+
+# 8. Local timezone + CN NTP servers.
+if uci -q get system.@system[0] >/dev/null; then
+	uci set system.@system[0].timezone='CST-8'
+	uci set system.@system[0].zonename='Asia/Shanghai'
+	uci -q delete system.ntp.server
+	uci add_list system.ntp.server='ntp.aliyun.com'
+	uci add_list system.ntp.server='ntp1.ntp.edu.cn'
+	uci add_list system.ntp.server='time.windows.com'
+	uci set system.ntp.enabled='1'
+	uci commit system
+fi
+
+# 9. USB 5G modem watchdog (self-heals NR registration drops).
+if [ -x /usr/sbin/n5000-modem-watch ]; then
+	mkdir -p /etc/crontabs
+	grep -q "n5000-modem-watch" /etc/crontabs/root 2>/dev/null || \
+		echo '*/2 * * * * /usr/sbin/n5000-modem-watch' >> /etc/crontabs/root
+fi
+
 exit 0

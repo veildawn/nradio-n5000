@@ -1,0 +1,67 @@
+#!/bin/sh
+# N5000 USB 5G modem watchdog (Quectel RM520N-GL & compatibles, ECM mode).
+# The modem occasionally drops its NR registration and stalls (CEREG 0,0)
+# after a self-reset, leaving usb0 up but the data path dead. This watchdog
+# escalates: data-path check -> network re-register (COPS=0) -> modem reboot
+# (CFUN=1,1) -> wwan re-DHCP. Run from cron every 2 minutes.
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+LOG=/tmp/modem-watch.log
+
+log() { echo "$(date '+%F %T') $*" >> "$LOG"; tail -c 4096 "$LOG" > "$LOG.t" 2>/dev/null && mv "$LOG.t" "$LOG"; }
+
+[ -d /sys/class/net/usb0 ] || exit 0
+
+if ping -c 3 -W 3 223.5.5.5 >/dev/null 2>&1; then exit 0; fi
+log "data path down"
+
+ATPORT=""
+for t in /dev/ttyUSB3 /dev/ttyUSB2 /dev/ttyUSB1 /dev/ttyUSB0; do
+	[ -c "$t" ] || continue
+	rm -f /tmp/wdprobe.out
+	(cat "$t" > /tmp/wdprobe.out & echo $! > /tmp/wdprobe.pid)
+	sleep 1
+	printf "AT\r" > "$t"
+	sleep 1
+	kill "$(cat /tmp/wdprobe.pid 2>/dev/null)" 2>/dev/null
+	grep -q "OK" /tmp/wdprobe.out 2>/dev/null && ATPORT="$t" && break
+done
+[ -n "$ATPORT" ] || { log "no AT port found"; exit 1; }
+
+at_cmd() {
+	rm -f /tmp/wdat.out
+	(cat "$ATPORT" > /tmp/wdat.out & echo $! > /tmp/wdat.pid)
+	sleep 1
+	printf "%s\r" "$1" > "$ATPORT"
+	sleep 3
+	kill "$(cat /tmp/wdat.pid 2>/dev/null)" 2>/dev/null
+	tr -d "\r" < /tmp/wdat.out 2>/dev/null
+}
+
+REG=$(at_cmd "AT+CEREG?" | grep -o "+CEREG: [0-9],[0-9]" | head -1)
+log "reg state: ${REG:-unknown}"
+
+case "$REG" in
+"+CEREG: "[0-9]",1"|"+CEREG: "[0-9]",5") ;;
+*)
+	at_cmd "AT+COPS=0" >/dev/null 2>&1
+	log "COPS=0 re-register requested"
+	;;
+esac
+
+sleep 25
+if ping -c 3 -W 3 223.5.5.5 >/dev/null 2>&1; then
+	log "recovered after re-register"
+	exit 0
+fi
+
+log "still down; rebooting modem (CFUN=1,1)"
+at_cmd "AT+CFUN=1,1" >/dev/null 2>&1
+sleep 50
+ifup wwan 2>/dev/null
+sleep 12
+if ping -c 3 -W 3 223.5.5.5 >/dev/null 2>&1; then
+	log "recovered after modem reboot"
+else
+	log "data path still down after reboot"
+fi
+exit 0
