@@ -1,0 +1,4 @@
+.ib/
+out/
+nradio-backup/
+board/__pycache__/

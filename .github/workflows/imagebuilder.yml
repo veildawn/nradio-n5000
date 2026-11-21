@@ -1,0 +1,191 @@
+name: OpenWrt ImageBuilder (NRadio N5000)
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      extra_packages:
+        description: "Space-separated OpenWrt packages to preinstall"
+        required: false
+        default: "luci luci-ssl luci-i18n-base-zh-cn luci-i18n-firewall-zh-cn luci-i18n-package-manager-zh-cn iw-full pciutils usbutils picocom"
+      publish_release:
+        description: "Publish built sysupgrade.bin as a GitHub Release"
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node for JavaScript checks
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Lint board scripts and Python tooling
+        run: |
+          python3 -m py_compile board/apply.py board/inject_imagebuilder.py board/platform_upgrade.py
+          find board/files/etc/board.d board/files/etc/hotplug.d board/files/etc/uci-defaults \
+                board/files/usr/sbin board/files/lib/functions board/files/lib/preinit \
+                -type f -print0 | xargs -0 -n 1 sh -n
+          for script in board/files/www/luci-static/resources/view/nradio/*.js; do
+            node --check "$script"
+          done
+          python3 - <<'PY'
+          import json, pathlib
+          for p in sorted(pathlib.Path('board/files').rglob('*.json')):
+              json.loads(p.read_text())
+              print('json ok:', p)
+          PY
+
+      - name: Install host prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential device-tree-compiler file gawk libncurses-dev python3 rsync unzip util-linux wget xz-utils zstd
+
+      - name: Download official OpenWrt Snapshot Filogic ImageBuilder
+        run: |
+          mkdir -p /tmp/ib/extracted /tmp/ib/release
+          curl -fL --retry 3 -o /tmp/ib/ib.tar.zst \
+            https://downloads.openwrt.org/snapshots/targets/mediatek/filogic/openwrt-imagebuilder-mediatek-filogic.Linux-x86_64.tar.zst
+          curl -fsSL https://downloads.openwrt.org/snapshots/targets/mediatek/filogic/version.buildinfo \
+            -o /tmp/ib/version.buildinfo
+          tar --use-compress-program=unzstd -xf /tmp/ib/ib.tar.zst -C /tmp/ib/extracted --strip-components=1
+          rm -f /tmp/ib/ib.tar.zst
+
+      - name: Inject NRadio N5000 board support
+        run: |
+          python3 -B board/inject_imagebuilder.py /tmp/ib/extracted
+
+      - name: Record the project release in the firmware
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish_release
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            REV="$(tr -d ' \r\n' < /tmp/ib/version.buildinfo)"
+            TAG="openwrt-${REV}-$(date -u +%Y%m%d%H%M)"
+          fi
+          RELEASE_FILE=/tmp/ib/extracted/files-n5000/usr/share/nradio-n5000/release
+          install -d "$(dirname "$RELEASE_FILE")"
+          printf '%s\n' "$TAG" > "$RELEASE_FILE"
+          printf 'NRADIO_RELEASE_TAG=%s\n' "$TAG" >> "$GITHUB_ENV"
+
+      - name: Pack custom sysupgrade.bin
+        run: |
+          EXTRA_PKGS="${{ inputs.extra_packages }}"
+          if [ -z "$EXTRA_PKGS" ]; then
+            EXTRA_PKGS="luci luci-ssl luci-i18n-base-zh-cn luci-i18n-firewall-zh-cn luci-i18n-package-manager-zh-cn iw-full pciutils usbutils picocom"
+          fi
+          umask 022
+          make -C /tmp/ib/extracted image \
+            PROFILE="nradio_n5000" \
+            PACKAGES="kmod-usb-net-cdc-ether ${EXTRA_PKGS}" \
+            FILES="files-n5000"
+
+      - name: Verify sysupgrade metadata and stage artifacts
+        run: |
+          BIN="/tmp/ib/extracted/bin/targets/mediatek/filogic/openwrt-mediatek-filogic-nradio_n5000-squashfs-sysupgrade.bin"
+          DTB=(/tmp/ib/extracted/build_dir/target-*/linux-mediatek_filogic/image-mt7987a-nradio-n5000.dtb)
+          FACTORY_PART="/soc/spi@11009800/flash@0/partitions/partition@2d0000"
+          test "$(fdtget "${DTB[0]}" "$FACTORY_PART" label)" = factory-firmware
+          fdtget "${DTB[0]}" "$FACTORY_PART" read-only
+          /tmp/ib/extracted/staging_dir/host/bin/fwtool -i /tmp/meta.json "$BIN"
+          python3 - <<'PY'
+          import json, struct, tarfile
+          with open("/tmp/meta.json") as f:
+              meta = json.load(f)
+          assert meta["compat_version"] == "1.0", meta
+          expected = {"nradio,n5000", "HCMT7987-SNSD", "HC-WT9504", "NRadio-N5000"}
+          assert expected == set(meta["supported_devices"]), meta["supported_devices"]
+          with tarfile.open("/tmp/ib/extracted/bin/targets/mediatek/filogic/openwrt-mediatek-filogic-nradio_n5000-squashfs-sysupgrade.bin", "r") as tf:
+              names = tf.getnames()
+              assert any(n.endswith("/CONTROL") for n in names) and any(n.endswith("/kernel") for n in names) and any(n.endswith("/root") for n in names), names
+              root = tf.getmember("sysupgrade-nradio_n5000/root")
+              header = tf.extractfile(root).read(48)
+              assert header[:4] == b"hsqs", "TF rootdisk requires SquashFS"
+              bytes_used = struct.unpack_from("<Q", header, 40)[0]
+              assert 0 < bytes_used <= root.size
+              # fstools uses the superblock size, while both flashers use the tar member size.
+              assert (bytes_used + 65535) // 65536 == (root.size + 65535) // 65536
+          print("metadata checks passed")
+          PY
+          cp -f /tmp/ib/extracted/bin/targets/mediatek/filogic/openwrt-mediatek-filogic-nradio_n5000* /tmp/ib/release/
+          cp -f /tmp/ib/extracted/bin/targets/mediatek/filogic/profiles.json /tmp/ib/release/
+          cp -f /tmp/ib/extracted/build_dir/target-*/linux-mediatek_filogic/image-mt7987a-nradio-n5000.dtb /tmp/ib/release/
+          (
+            cd /tmp/ib/release
+            sha256sum \
+              openwrt-mediatek-filogic-nradio_n5000-squashfs-sysupgrade.bin \
+              openwrt-mediatek-filogic-nradio_n5000.manifest \
+              openwrt-mediatek-filogic-nradio_n5000.bom.cdx.json \
+              profiles.json \
+              image-mt7987a-nradio-n5000.dtb > sha256sums
+          )
+          ls -lh /tmp/ib/release
+          cat /tmp/ib/release/sha256sums
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-nradio-n5000-${{ github.run_number }}
+          path: /tmp/ib/release/*
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REV="$(cat /tmp/ib/version.buildinfo | tr -d ' \r\n')"
+          KVER="$(basename /tmp/ib/extracted/build_dir/target-*/linux-mediatek_filogic/linux-* | sed 's/^linux-//')"
+          TAG="$NRADIO_RELEASE_TAG"
+          cat <<EOF > /tmp/ib/release_notes.md
+          ## OpenWrt Official Snapshot (\`${REV}\` / Linux \`${KVER}\`) — NRadio N5000
+
+          基于官方 OpenWrt \`main\` Snapshot \`mediatek/filogic\` ImageBuilder 自动构建，使用主线开源 \`mt76\` Wi-Fi 驱动。
+
+          ### 核心特性
+          - **硬件**：MT7987A + MT7992 (BE5040 Wi-Fi 7)；\`LAN = eth0\`（Airoha EN8811H 2.5G PHY，机身 LAN/ODU 口）、\`WAN = eth1\`（片内 2.5G PHY）。板级定义从原厂 NROS-2.3.9 设备树逆向校准。
+          - **Wi-Fi 7**：\`kmod-mt7996e\` + \`kmod-mt7992-23-firmware\`，\`country=CN\`，PCIe 硬复位、\`Factory\` EEPROM 校准读取与单播 MAC 自动派生（修复 \`00:0c:43:*\` 模板 MAC）。
+          - **默认无线**：\`NRadio-N5000-2G\` / \`NRadio-N5000-5G\`，WPA2/WPA3 混合加密，初始密码 \`12345678\`。
+          - **TF 双系统**：只读根与 \`/overlay\` 位于 TF 卡第 4 分区，原厂镜像以只读 \`factory-firmware\` 暴露；LuCI「系统 → 双系统切换」一键切回原厂（\`boot_system\`，写入前校验 SPI-NOR CRC32）。
+          - **在线升级**：LuCI「系统 → 在线固件更新」直连本仓库 Release，SHA-256 校验后一键升级。
+          - **散热与系统**：PWM 温控风扇（\`<65 °C\` 停转，\`65/75/85 °C\` 渐进调速）、\`zram-swap\`、\`uboot-envtools\`，预装汉化 LuCI（\`luci-ssl\` 等）。
+
+          ### 刷入说明
+          - 原厂 Web（192.168.88.1，默认密码 \`admin\`）→ 高级设置 → 系统 → Storage Manager → Create Boot Disk 上传 \`sysupgrade.bin\`，烧录完成后选择 Secondary System First 重启。启动失败自动回退原厂。
+          - 首次登录：\`http://192.168.1.1\`，\`root\` 空密码；请立即设置管理密码。
+
+          ### SHA-256 校验值
+          \`\`\`text
+          $(cat /tmp/ib/release/sha256sums)
+          \`\`\`
+          EOF
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" /tmp/ib/release/* --clobber
+            gh release edit "$TAG" \
+              --title "OpenWrt Snapshot ${REV} (Linux ${KVER}) for NRadio N5000" \
+              --notes-file /tmp/ib/release_notes.md
+          else
+            gh release create "$TAG" /tmp/ib/release/* \
+              --title "OpenWrt Snapshot ${REV} (Linux ${KVER}) for NRadio N5000" \
+              --notes-file /tmp/ib/release_notes.md
+          fi

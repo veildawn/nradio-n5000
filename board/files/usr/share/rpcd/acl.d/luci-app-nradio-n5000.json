@@ -1,0 +1,23 @@
+{
+	"luci-app-nradio-n5000": {
+		"description": "Grant access to NRadio N5000 dual-boot and online upgrade management",
+		"read": {
+		},
+		"write": {
+			"file": {
+				"/usr/sbin/n5000-bootswitch": [
+					"exec"
+				],
+				"/usr/sbin/n5000-upgrade": [
+					"exec"
+				],
+				"/sbin/reboot": [
+					"exec"
+				],
+				"/sbin/sysupgrade": [
+					"exec"
+				]
+			}
+		}
+	}
+}

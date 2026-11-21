@@ -1,0 +1,46 @@
+#!/bin/sh
+. /lib/functions.sh
+[ "$(board_name)" = "nradio,n5000" ] || exit 0
+
+# 1. Human-readable interface labels for the LuCI Interfaces page.
+uci set network.wan.label='有线 WAN（2.5G，内部 PHY）'
+uci set network.wan6.label='有线 WAN IPv6'
+uci commit network
+
+# 2. Configure odhcpd hybrid RA/DHCPv6 so wired WAN6 PD (and single-/64
+#    upstreams) both provide working end-to-end IPv6 to LAN clients.
+if uci -q get dhcp.lan >/dev/null; then
+	uci set dhcp.lan.ra='hybrid'
+	uci set dhcp.lan.dhcpv6='hybrid'
+	uci set dhcp.lan.ra_default='1'
+fi
+if ! uci -q get dhcp.wan6 >/dev/null; then
+	uci set dhcp.wan6=dhcp
+	uci set dhcp.wan6.interface='wan6'
+	uci set dhcp.wan6.ignore='1'
+fi
+uci set dhcp.wan6.master='1'
+uci set dhcp.wan6.ra='hybrid'
+uci set dhcp.wan6.dhcpv6='hybrid'
+uci commit dhcp
+
+# 3. Tune zram-swap (lzo-rle has minimal per-CPU workspace overhead; leaving
+#    zram_size_mb unset lets /etc/init.d/zram auto-size to 50% of MemTotal,
+#    i.e. ~493 MiB on N5000's 1 GiB DDR).
+if uci -q get system.@system[0] >/dev/null; then
+	[ -n "$(uci -q get system.@system[0].zram_comp_algo)" ] || \
+		uci set system.@system[0].zram_comp_algo='lzo-rle'
+	[ -n "$(uci -q get system.@system[0].zram_priority)" ] || \
+		uci set system.@system[0].zram_priority='100'
+	uci commit system
+fi
+
+# 4. Populate default wireless config (if radios are already probed), country=CN,
+#    and unicast per-radio macaddr_base.
+if ! { [ -e /etc/config/wireless ] && uci -q show wireless | grep -q '=wifi-device$'; }; then
+	[ -x /sbin/wifi ] && /sbin/wifi config >/dev/null 2>&1 || true
+fi
+[ -f /etc/hotplug.d/ieee80211/15-nradio-n5000-wifi-mac ] && \
+	ACTION=add /bin/sh /etc/hotplug.d/ieee80211/15-nradio-n5000-wifi-mac
+
+exit 0
