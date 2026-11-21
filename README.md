@@ -31,6 +31,7 @@
 | 5 GHz Wi-Fi | `NRadio-N5000-5G`，默认开启 |
 | 无线密码 | 两个频段均为 `12345678`，WPA2/WPA3 混合加密 |
 | 有线端口 | LAN（EN8811H，机身 LAN 丝印口）对应 `eth0`，向客户端分配地址；WAN（内部 2.5G PHY）对应 `eth1`，通过 DHCP 获取上游地址 |
+| 5G 上行 | N5000 无内置模组。USB 接入 Quectel RM520N-GL 等 5G dongle（ECM/RNDIS 自动拨号模式）即插即用，`wwan`（usb0）自动 DHCP 上网；也支持 NCM/QMI 类模组手动配置 |
 
 首次登录后在 **系统 → 管理权** 修改默认密码 `n5000-openwrt`，并在 **网络 → 无线** 修改无线密码。SSH 同一密码登录。
 

@@ -2,12 +2,34 @@
 . /lib/functions.sh
 [ "$(board_name)" = "nradio,n5000" ] || exit 0
 
-# 1. Human-readable interface labels for the LuCI Interfaces page.
+# 1. USB 5G modem (Quectel RM520N-GL etc.) in ECM/RNDIS mode: the modem
+#    auto-dials and runs its own DHCP server on usb0. N5000 has no built-in
+#    modem; cellular uplink comes from a USB dongle.
+if ! uci -q get network.wwan >/dev/null; then
+	uci set network.wwan=interface
+	uci set network.wwan.proto='dhcp'
+	uci set network.wwan.device='usb0'
+	uci set network.wwan.metric='20'
+	uci set network.wwan.label='5G USB Modem'
+	uci commit network
+	i=0
+	while uci -q get firewall.@zone[$i] >/dev/null; do
+		if [ "$(uci -q get firewall.@zone[$i].name)" = "wan" ]; then
+			cur_nets=" $(uci -q get firewall.@zone[$i].network) "
+			case "$cur_nets" in *" wwan "*) ;; *) uci add_list firewall.@zone[$i].network="wwan" ;; esac
+			break
+		fi
+		i=$((i + 1))
+	done
+	uci commit firewall
+fi
+
+# 2. Human-readable interface labels for the LuCI Interfaces page.
 uci set network.wan.label='有线 WAN（2.5G，内部 PHY）'
 uci set network.wan6.label='有线 WAN IPv6'
 uci commit network
 
-# 2. Configure odhcpd hybrid RA/DHCPv6 so wired WAN6 PD (and single-/64
+# 3. Configure odhcpd hybrid RA/DHCPv6 so wired WAN6 PD (and single-/64
 #    upstreams) both provide working end-to-end IPv6 to LAN clients.
 if uci -q get dhcp.lan >/dev/null; then
 	uci set dhcp.lan.ra='hybrid'
@@ -24,7 +46,7 @@ uci set dhcp.wan6.ra='hybrid'
 uci set dhcp.wan6.dhcpv6='hybrid'
 uci commit dhcp
 
-# 3. Tune zram-swap (lzo-rle has minimal per-CPU workspace overhead; leaving
+# 4. Tune zram-swap (lzo-rle has minimal per-CPU workspace overhead; leaving
 #    zram_size_mb unset lets /etc/init.d/zram auto-size to 50% of MemTotal,
 #    i.e. ~493 MiB on N5000's 1 GiB DDR).
 if uci -q get system.@system[0] >/dev/null; then
@@ -35,7 +57,7 @@ if uci -q get system.@system[0] >/dev/null; then
 	uci commit system
 fi
 
-# 4. Populate default wireless config (if radios are already probed), country=CN,
+# 5. Populate default wireless config (if radios are already probed), country=CN,
 #    and unicast per-radio macaddr_base.
 if ! { [ -e /etc/config/wireless ] && uci -q show wireless | grep -q '=wifi-device$'; }; then
 	[ -x /sbin/wifi ] && /sbin/wifi config >/dev/null 2>&1 || true
