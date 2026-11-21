@@ -1,15 +1,15 @@
 #!/bin/sh
 # Safe Dual-OS boot target switcher for NRadio N5000.
-# U-Boot reads `boot_system` from SPI-NOR "u-boot-env":
-#   boot_system=1 -> boot OpenWrt from TF card (GPT kernel/rootfs)
-#   boot_system=0 -> boot Factory ROM from onboard flash
+# U-Boot reads `boot_from_sd` from SPI-NOR "u-boot-env":
+#   boot_from_sd=1 -> boot OpenWrt from TF card (GPT kernel/rootfs)
+#   boot_from_sd=0 -> boot Factory ROM from onboard flash
 # Refuses to write unless SPI-NOR u-boot-env passes CRC32 & key sanity checks.
 
 set -u
 
 ENVCFG="/etc/fw_env.config"
 PARTNAME="u-boot-env"
-VAR="boot_system"
+VAR="boot_from_sd"
 MTD=""
 
 try_env() {
