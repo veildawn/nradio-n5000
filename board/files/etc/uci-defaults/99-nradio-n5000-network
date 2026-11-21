@@ -89,11 +89,5 @@ if uci -q get system.@system[0] >/dev/null; then
 	uci commit system
 fi
 
-# 9. USB 5G modem watchdog (self-heals NR registration drops).
-if [ -x /usr/sbin/n5000-modem-watch ]; then
-	mkdir -p /etc/crontabs
-	grep -q "n5000-modem-watch" /etc/crontabs/root 2>/dev/null || \
-		echo '*/2 * * * * /usr/sbin/n5000-modem-watch' >> /etc/crontabs/root
-fi
 
 exit 0
