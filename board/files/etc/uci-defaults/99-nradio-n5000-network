@@ -90,4 +90,14 @@ if uci -q get system.@system[0] >/dev/null; then
 fi
 
 
+# 10. Larger dnsmasq cache and log ring (RAM is plentiful, 1 GiB).
+uci set dhcp.@dnsmasq[0].cachesize='1000'
+uci commit dhcp
+uci set system.@system[0].log_size='256'
+uci commit system
+
+# 11. Uplink preference: wired WAN (metric 10) beats USB 5G wwan (metric 20).
+uci set network.wan.metric='10'
+uci commit network
+
 exit 0
